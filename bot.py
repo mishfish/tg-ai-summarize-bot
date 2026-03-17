@@ -307,6 +307,10 @@ def create_app() -> Application:
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_text))
 
     h, m = config.SUMMARY_TIME.split(":")
-    app.job_queue.run_daily(scheduled_summary, time=time(int(h), int(m)))
+    app.job_queue.run_daily(
+            scheduled_summary,
+            time=time(int(h), int(m)),
+            job_kwargs={"misfire_grace_time": 7200}
+            )
 
     return app
