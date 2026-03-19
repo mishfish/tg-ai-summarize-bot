@@ -3,3 +3,4 @@ telethon>=1.36.0
 groq>=0.9.0
 anthropic>=0.40.0
 python-dotenv>=1.0.0
+ollama

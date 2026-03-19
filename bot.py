@@ -1,14 +1,15 @@
+import asyncio
 import logging
 from datetime import time
 from functools import wraps
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
-    CommandHandler,
-    MessageHandler,
     CallbackQueryHandler,
+    CommandHandler,
     ContextTypes,
+    MessageHandler,
     filters,
 )
 
@@ -34,6 +35,7 @@ def require_auth(func):
             await update.message.reply_text("Send the access code first.")
             return
         return await func(update, context)
+
     return wrapper
 
 
@@ -44,6 +46,7 @@ def get_history(user_id: int) -> list[dict]:
 
 
 # --- Handlers ---
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if storage.is_authorized(update.effective_user.id):
@@ -121,9 +124,13 @@ async def summary_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if context.args:
             channel = context.args[0].lstrip("@")
             hours = int(context.args[1]) if len(context.args) > 1 else 24
-            result = summarizer.summarize_channel(channel, hours=hours)
+            # Run summarizer in a background thread to avoid blocking the event loop
+            result = await asyncio.to_thread(
+                summarizer.summarize_channel, channel, hours
+            )
         else:
-            result = summarizer.summarize_all(hours=24)
+            # Summarize all in a thread as it may be blocking / long-running
+            result = await asyncio.to_thread(summarizer.summarize_all, 24)
         await update.message.reply_text(result)
     except Exception as e:
         await update.message.reply_text(f"Error generating summary: {e}")
@@ -133,13 +140,17 @@ async def summary_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     models = provider.available_models
     keyboard = [
-        [InlineKeyboardButton(
-            f"{'* ' if m == provider.current_model() else ''}{m}",
-            callback_data=f"model:{m}",
-        )]
+        [
+            InlineKeyboardButton(
+                f"{'* ' if m == provider.current_model() else ''}{m}",
+                callback_data=f"model:{m}",
+            )
+        ]
         for m in models
     ]
-    await update.message.reply_text("Select a model:", reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.message.reply_text(
+        "Select a model:", reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
 
 async def model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -155,7 +166,9 @@ async def model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 @require_auth
 async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    histories[update.effective_user.id] = [{"role": "system", "content": config.SYSTEM_PROMPT}]
+    histories[update.effective_user.id] = [
+        {"role": "system", "content": config.SYSTEM_PROMPT}
+    ]
     await update.message.reply_text("Chat history cleared.")
 
 
@@ -218,7 +231,9 @@ async def set_target(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     try:
         chat_id = int(context.args[0])
     except ValueError:
-        await update.message.reply_text("chat_id must be a number (e.g. -1001234567890)")
+        await update.message.reply_text(
+            "chat_id must be a number (e.g. -1001234567890)"
+        )
         return
     storage.set_alert_target(chat_id)
     await update.message.reply_text(f"Alert target set to: {chat_id}")
@@ -261,12 +276,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     history = get_history(user_id)
     history.append({"role": "user", "content": text})
     if len(history) > config.MAX_HISTORY + 1:
-        histories[user_id] = [history[0]] + history[-config.MAX_HISTORY:]
+        histories[user_id] = [history[0]] + history[-config.MAX_HISTORY :]
         history = histories[user_id]
 
     await update.message.chat.send_action("typing")
     try:
-        reply = provider.chat(history)
+        # Call the potentially blocking provider.chat in a thread so we don't block the event loop
+        reply = await asyncio.to_thread(provider.chat, history)
         history.append({"role": "assistant", "content": reply})
         await update.message.reply_text(reply)
     except Exception as e:
@@ -276,17 +292,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 # --- Scheduled job ---
 
+
 async def scheduled_summary(context: ContextTypes.DEFAULT_TYPE) -> None:
     if not config.SUMMARY_CHAT_ID:
         return
     try:
-        result = summarizer.summarize_all(hours=24)
+        # Run summarization in a background thread to avoid blocking job queue / event loop
+        result = await asyncio.to_thread(summarizer.summarize_all, 24)
         await context.bot.send_message(chat_id=config.SUMMARY_CHAT_ID, text=result)
     except Exception as e:
         logger.error(f"Scheduled summary failed: {e}")
 
 
 # --- App factory ---
+
 
 def create_app() -> Application:
     app = Application.builder().token(config.TELEGRAM_TOKEN).build()
@@ -304,13 +323,17 @@ def create_app() -> Application:
     app.add_handler(CommandHandler("clear", clear))
     app.add_handler(CommandHandler("info", info))
     app.add_handler(CallbackQueryHandler(model_callback, pattern=r"^model:"))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_text))
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_text
+        )
+    )
 
     h, m = config.SUMMARY_TIME.split(":")
     app.job_queue.run_daily(
-            scheduled_summary,
-            time=time(int(h), int(m)),
-            job_kwargs={"misfire_grace_time": 7200}
-            )
+        scheduled_summary,
+        time=time(int(h), int(m)),
+        job_kwargs={"misfire_grace_time": 7200},
+    )
 
     return app
