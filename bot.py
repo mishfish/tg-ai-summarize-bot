@@ -124,7 +124,9 @@ async def summary_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             result = summarizer.summarize_channel(channel, hours=hours)
         else:
             result = summarizer.summarize_all(hours=24)
-        await update.message.reply_text(result)
+        limit = 4096
+        for i in range(0, len(result), limit):
+            await update.message.reply_text(result[i:i + limit])
     except Exception as e:
         await update.message.reply_text(f"Error generating summary: {e}")
 
@@ -281,7 +283,9 @@ async def scheduled_summary(context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     try:
         result = summarizer.summarize_all(hours=24)
-        await context.bot.send_message(chat_id=config.SUMMARY_CHAT_ID, text=result)
+        limit = 4096
+        for i in range(0, len(result), limit):
+            await context.bot.send_message(chat_id=config.SUMMARY_CHAT_ID, text=result[i:i + limit])
     except Exception as e:
         logger.error(f"Scheduled summary failed: {e}")
 
