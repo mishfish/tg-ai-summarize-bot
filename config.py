@@ -30,6 +30,12 @@ SUMMARY_CHAT_ID = int(os.getenv("SUMMARY_CHAT_ID", "0"))
 
 # Storage
 MAX_MESSAGES_PER_CHANNEL = int(os.getenv("MAX_MESSAGES_PER_CHANNEL", "500"))
+STORAGE_PROVIDERS = [p.strip() for p in os.getenv("STORAGE_PROVIDERS", "json").split(",") if p.strip()]
+DUCKDB_PATH = os.getenv("DUCKDB_PATH", "data/storage.db")
 
 # Alert reposting — channel ID (e.g. -1001234567890) where the bot is admin
 ALERT_TARGET_CHAT_ID = int(os.getenv("ALERT_TARGET_CHAT_ID", "0"))
+
+# Legal monitor
+LEGAL_MONITOR_TIME = os.getenv("LEGAL_MONITOR_TIME", "07:00")  # UTC HH:MM
+LEGAL_MONITOR_PAGES = int(os.getenv("LEGAL_MONITOR_PAGES", "0"))  # 0 = all
