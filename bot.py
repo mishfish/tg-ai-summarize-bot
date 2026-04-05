@@ -16,6 +16,7 @@ import config
 import storage
 import summarizer
 from llm import get_provider
+import legal_monitor
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +63,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "Other:\n"
             "/model — switch LLM model\n"
             "/clear — clear chat history\n"
-            "/info — current settings"
+            "/info — current settings\n"
+            "/bills [pages] — scrape Verkhovna Rada bills"
         )
     else:
         await update.message.reply_text("Send the access code to get started.")
@@ -244,6 +246,24 @@ async def info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+@require_auth
+async def bills_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.chat.send_action("typing")
+    try:
+        max_pages = int(context.args[0]) if context.args else config.LEGAL_MONITOR_PAGES
+    except (ValueError, IndexError):
+        await update.message.reply_text("Usage: /bills [pages] — pages is optional integer")
+        return
+    try:
+        stats = await legal_monitor.run(max_pages=max_pages)
+        await update.message.reply_text(
+            f"Знайдено {stats['total']} законопроєктів, збережено {stats['new']} нових."
+        )
+    except Exception as e:
+        logger.error("bills_command failed: %s", e)
+        await update.message.reply_text(f"Помилка: {e}")
+
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     text = update.message.text.strip()
@@ -307,6 +327,7 @@ def create_app() -> Application:
     app.add_handler(CommandHandler("model", model_command))
     app.add_handler(CommandHandler("clear", clear))
     app.add_handler(CommandHandler("info", info))
+    app.add_handler(CommandHandler("bills", bills_command))
     app.add_handler(CallbackQueryHandler(model_callback, pattern=r"^model:"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_text))
 
