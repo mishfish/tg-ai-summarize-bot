@@ -1,7 +1,6 @@
 import json
 import os
 import tempfile
-from datetime import datetime, timezone
 
 import duckdb
 import pytest
@@ -67,6 +66,10 @@ def test_save_bills_skips_duplicates(tmp_path):
     stats2 = legal_monitor.save_bills(bills, json_path=json_path, db_path=db_path)
     assert stats2["new"] == 0
     assert stats2["total"] == 1
+
+    with open(json_path) as f:
+        saved = json.load(f)
+    assert len(saved) == 1
 
 
 def test_save_bills_skips_bills_without_valid_id(tmp_path):

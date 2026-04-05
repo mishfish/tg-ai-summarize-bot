@@ -52,46 +52,55 @@ def save_bills(
         db_path = config.DUCKDB_PATH
 
     now = datetime.now(timezone.utc)
-    conn = duckdb.connect(db_path)
-    _ensure_schema(conn)
 
-    new_count = 0
+    with duckdb.connect(db_path) as conn:
+        _ensure_schema(conn)
+        conn.begin()
+        try:
+            before = conn.execute("SELECT COUNT(*) FROM bills").fetchone()[0]
 
-    for bill in bills:
-        bill_id = _extract_id(bill.get("link", ""))
-        if bill_id is None:
-            logger.warning("Skipping bill with no valid ID: %s", bill.get("link"))
-            continue
+            for bill in bills:
+                bill_id = _extract_id(bill.get("link", ""))
+                if bill_id is None:
+                    logger.warning("Skipping bill with no valid ID: %s", bill.get("link"))
+                    continue
 
-        existing = conn.execute(
-            "SELECT id FROM bills WHERE id = ?", [bill_id]
-        ).fetchone()
+                title = bill.get("title", "")
+                link = bill.get("link", "")
+                if not title:
+                    logger.warning("Skipping bill with no title")
+                    continue
 
-        if existing is None:
-            conn.execute(
-                "INSERT INTO bills (id, title, link, scraped_at) VALUES (?, ?, ?, ?)",
-                [bill_id, bill["title"], bill["link"], now],
-            )
-            new_count += 1
+                conn.execute(
+                    "INSERT INTO bills (id, title, link, scraped_at) VALUES (?, ?, ?, ?) ON CONFLICT (id) DO NOTHING",
+                    [bill_id, title, link, now],
+                )
 
-    # Load all bills from DB for JSON export
-    all_rows = conn.execute(
-        "SELECT id, title, link, scraped_at FROM bills ORDER BY id ASC"
-    ).fetchall()
-    conn.close()
+            after = conn.execute("SELECT COUNT(*) FROM bills").fetchone()[0]
+            new_count = after - before
 
-    all_bills_for_json = [
-        {
-            "id": row[0],
-            "title": row[1],
-            "link": row[2],
-            "scraped_at": str(row[3]),
-        }
-        for row in all_rows
-    ]
+            # Load all bills from DB for JSON export
+            all_rows = conn.execute(
+                "SELECT id, title, link, scraped_at FROM bills ORDER BY id ASC"
+            ).fetchall()
 
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(all_bills_for_json, f, ensure_ascii=False, indent=2)
+            all_bills_for_json = [
+                {
+                    "id": row[0],
+                    "title": row[1],
+                    "link": row[2],
+                    "scraped_at": str(row[3]),
+                }
+                for row in all_rows
+            ]
+
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump(all_bills_for_json, f, ensure_ascii=False, indent=2)
+
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
     total = len(all_bills_for_json)
     logger.info("save_bills: %d new, %d total", new_count, total)
