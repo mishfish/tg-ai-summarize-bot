@@ -1,6 +1,7 @@
 import asyncio
 import io
 import logging
+from datetime import time as dt_time
 
 from telegram import InputFile
 from telethon import TelegramClient
@@ -10,6 +11,7 @@ import storage
 import listener as listener_module
 from listener import AlertMessage
 from bot import create_app
+import legal_monitor
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -71,10 +73,27 @@ async def main():
     await listener_module.setup(client, on_alert=on_alert)
     logger.info("Telethon listener started")
 
+    async def scheduled_legal_monitor(context) -> None:
+        try:
+            stats = await legal_monitor.run(max_pages=config.LEGAL_MONITOR_PAGES)
+            logger.info(
+                "Legal monitor: %d new bills, %d total", stats["new"], stats["total"]
+            )
+        except Exception as exc:
+            logger.error("Scheduled legal monitor failed: %s", exc)
+
     async with app:
         await app.start()
         await app.updater.start_polling()
         logger.info(f"Bot started | provider={config.LLM_PROVIDER} | model={config.GROQ_MODEL if config.LLM_PROVIDER == 'groq' else config.ANTHROPIC_MODEL}")
+
+        lh, lm = config.LEGAL_MONITOR_TIME.split(":")
+        app.job_queue.run_daily(
+            scheduled_legal_monitor,
+            time=dt_time(int(lh), int(lm)),
+            job_kwargs={"misfire_grace_time": 7200},
+        )
+        logger.info("Legal monitor scheduled at %s UTC", config.LEGAL_MONITOR_TIME)
 
         # Run until Ctrl+C
         try:
