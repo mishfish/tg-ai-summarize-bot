@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import re
 from datetime import datetime, timezone
 
@@ -11,6 +12,7 @@ import config
 logger = logging.getLogger(__name__)
 
 _BILLS_URL = "https://itd.rada.gov.ua/billinfo/Bills/period"
+_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 
 
 def _extract_id(link: str) -> int | None:
@@ -34,7 +36,7 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
 
 def save_bills(
     bills: list[dict],
-    json_path: str = "data/bills.json",
+    json_path: str | None = None,
     db_path: str | None = None,
 ) -> dict:
     """
@@ -48,9 +50,12 @@ def save_bills(
     Returns:
         {"total": <count in db>, "new": <inserted this call>}
     """
+    if json_path is None:
+        json_path = os.path.join(_DATA_DIR, "bills.json")
     if db_path is None:
         db_path = config.DUCKDB_PATH
 
+    os.makedirs(os.path.dirname(json_path), exist_ok=True)
     now = datetime.now(timezone.utc)
 
     with duckdb.connect(db_path) as conn:
@@ -200,7 +205,7 @@ async def scrape_bills(max_pages: int = 0) -> list[dict]:
 
 async def run(
     max_pages: int = 0,
-    json_path: str = "data/bills.json",
+    json_path: str | None = None,
     db_path: str | None = None,
 ) -> dict:
     """Scrape bills and persist them. Returns {"new": N, "total": M}."""

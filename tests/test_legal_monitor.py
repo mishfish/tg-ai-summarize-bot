@@ -1,6 +1,8 @@
+import asyncio
 import json
 import os
 import tempfile
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import duckdb
 import pytest
@@ -83,10 +85,6 @@ def test_save_bills_skips_bills_without_valid_id(tmp_path):
     stats = legal_monitor.save_bills(bills, json_path=json_path, db_path=db_path)
     assert stats["new"] == 0
     assert stats["total"] == 0
-
-
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
 
 
 def _make_playwright_mock(pages_data: list[list[dict]], max_page: int = 1):
