@@ -1,8 +1,6 @@
 import asyncio
 import io
 import logging
-from datetime import time as dt_time
-
 from telegram import InputFile
 from telethon import TelegramClient
 
@@ -87,13 +85,16 @@ async def main():
         await app.updater.start_polling()
         logger.info(f"Bot started | provider={config.LLM_PROVIDER} | model={config.GROQ_MODEL if config.LLM_PROVIDER == 'groq' else config.ANTHROPIC_MODEL}")
 
-        lh, lm = config.LEGAL_MONITOR_TIME.split(":")
-        app.job_queue.run_daily(
+        interval_seconds = config.LEGAL_MONITOR_INTERVAL_HOURS * 3600
+        app.job_queue.run_repeating(
             scheduled_legal_monitor,
-            time=dt_time(int(lh), int(lm)),
+            interval=interval_seconds,
+            first=0,
             job_kwargs={"misfire_grace_time": 7200},
         )
-        logger.info("Legal monitor scheduled at %s UTC", config.LEGAL_MONITOR_TIME)
+        logger.info(
+            "Legal monitor scheduled every %.1f hour(s)", config.LEGAL_MONITOR_INTERVAL_HOURS
+        )
 
         # Run until Ctrl+C
         try:

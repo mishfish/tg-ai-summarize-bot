@@ -39,3 +39,4 @@ ALERT_TARGET_CHAT_ID = int(os.getenv("ALERT_TARGET_CHAT_ID", "0"))
 # Legal monitor
 LEGAL_MONITOR_TIME = os.getenv("LEGAL_MONITOR_TIME", "07:00")  # UTC HH:MM
 LEGAL_MONITOR_PAGES = int(os.getenv("LEGAL_MONITOR_PAGES", "0"))  # 0 = all
+LEGAL_MONITOR_INTERVAL_HOURS = float(os.getenv("LEGAL_MONITOR_INTERVAL_HOURS", "1"))  # hours between scrapes
