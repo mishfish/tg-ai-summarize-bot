@@ -1,17 +1,19 @@
-import json
 import os
 from collections import deque
 from datetime import datetime, timezone
 from typing import Optional
 
 import config
+from storage_providers import create_provider
 
-DATA_DIR = "data"
-os.makedirs(DATA_DIR, exist_ok=True)
+os.makedirs("data", exist_ok=True)
 os.makedirs("session", exist_ok=True)
 
-MESSAGES_FILE = os.path.join(DATA_DIR, "messages.json")
-STATE_FILE = os.path.join(DATA_DIR, "state.json")
+_provider = create_provider(
+    config.STORAGE_PROVIDERS,
+    data_dir="data",
+    duckdb_path=config.DUCKDB_PATH,
+)
 
 # channel_name -> deque of {"text", "date", "sender"}
 _messages: dict[str, deque] = {}
@@ -23,35 +25,28 @@ _authorized_users: set[int] = set()
 
 def load() -> None:
     global _messages, _monitored_channels, _alert_channels, _alert_target, _authorized_users
-    if os.path.exists(MESSAGES_FILE):
-        with open(MESSAGES_FILE) as f:
-            data = json.load(f)
-        _messages = {
-            k: deque(v, maxlen=config.MAX_MESSAGES_PER_CHANNEL)
-            for k, v in data.items()
-        }
-    if os.path.exists(STATE_FILE):
-        with open(STATE_FILE) as f:
-            state = json.load(f)
-        _monitored_channels = set(state.get("monitored_channels", []))
-        _alert_channels = set(state.get("alert_channels", []))
-        _alert_target = state.get("alert_target", config.ALERT_TARGET_CHAT_ID)
-        _authorized_users = set(state.get("authorized_users", []))
+    data = _provider.load_messages()
+    _messages = {
+        k: deque(v, maxlen=config.MAX_MESSAGES_PER_CHANNEL)
+        for k, v in data.items()
+    }
+    state = _provider.load_state()
+    _monitored_channels = set(state.get("monitored_channels", []))
+    _alert_channels = set(state.get("alert_channels", []))
+    _alert_target = state.get("alert_target", config.ALERT_TARGET_CHAT_ID)
+    _authorized_users = set(state.get("authorized_users", []))
 
 
 def _save() -> None:
-    with open(MESSAGES_FILE, "w") as f:
-        json.dump({k: list(v) for k, v in _messages.items()}, f)
-    with open(STATE_FILE, "w") as f:
-        json.dump(
-            {
-                "monitored_channels": list(_monitored_channels),
-                "alert_channels": list(_alert_channels),
-                "alert_target": _alert_target,
-                "authorized_users": list(_authorized_users),
-            },
-            f,
-        )
+    _provider.save_messages({k: list(v) for k, v in _messages.items()})
+    _provider.save_state(
+        {
+            "monitored_channels": list(_monitored_channels),
+            "alert_channels": list(_alert_channels),
+            "alert_target": _alert_target,
+            "authorized_users": list(_authorized_users),
+        }
+    )
 
 
 # --- Messages ---
