@@ -17,6 +17,7 @@ import storage
 import summarizer
 from llm import get_provider
 import legal_monitor
+import alert_map
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +65,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "/model — switch LLM model\n"
             "/clear — clear chat history\n"
             "/info — current settings\n"
-            "/bills [pages] — scrape Verkhovna Rada bills"
+            "/bills [pages] — scrape Verkhovna Rada bills\n"
+            "/fetchalerts [days] — завантажити історію алертів (default: 60 днів)"
         )
     else:
         await update.message.reply_text("Send the access code to get started.")
@@ -257,10 +259,44 @@ async def bills_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     try:
         stats = await legal_monitor.run(max_pages=max_pages)
         await update.message.reply_text(
-            f"Знайдено {stats['total']} законопроєктів, збережено {stats['new']} нових."
+            f"Знайдено на сайті: {stats['scraped']} законопроєктів.\n"
+            f"Збережено нових: {stats['new']}.\n"
+            f"Всього в базі: {stats['total']}."
         )
     except Exception as e:
         logger.error("bills_command failed: %s", e)
+        await update.message.reply_text(f"Помилка: {e}")
+
+
+@require_auth
+async def fetchalerts_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        days = int(context.args[0]) if context.args else 60
+    except (ValueError, IndexError):
+        await update.message.reply_text("Usage: /fetchalerts [days]")
+        return
+
+    client = context.bot_data.get("telethon_client")
+    if client is None:
+        await update.message.reply_text("Telethon client недоступний.")
+        return
+
+    channels = storage.get_alert_channels()
+    if not channels:
+        await update.message.reply_text("Немає налаштованих алерт-каналів.")
+        return
+
+    await update.message.reply_text(
+        f"Завантажую {days} дн. з {len(channels)} каналів… це може зайняти кілька хвилин."
+    )
+    try:
+        stats = await alert_map.fetch_history(client, channels, days=days)
+        await update.message.reply_text(
+            f"Готово. Перевірено: {stats['fetched']} повідомлень, "
+            f"збережено нових: {stats['new']}."
+        )
+    except Exception as e:
+        logger.error("fetchalerts_command failed: %s", e)
         await update.message.reply_text(f"Помилка: {e}")
 
 
@@ -328,6 +364,7 @@ def create_app() -> Application:
     app.add_handler(CommandHandler("clear", clear))
     app.add_handler(CommandHandler("info", info))
     app.add_handler(CommandHandler("bills", bills_command))
+    app.add_handler(CommandHandler("fetchalerts", fetchalerts_command))
     app.add_handler(CallbackQueryHandler(model_callback, pattern=r"^model:"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_text))
 
