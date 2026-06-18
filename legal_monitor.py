@@ -108,8 +108,8 @@ def save_bills(
             raise
 
     total = len(all_bills_for_json)
-    logger.info("save_bills: %d new, %d total", new_count, total)
-    return {"new": new_count, "total": total}
+    logger.info("save_bills: %d new, %d total, %d scraped", new_count, total, len(bills))
+    return {"new": new_count, "total": total, "scraped": len(bills)}
 
 
 async def scrape_bills(max_pages: int = 0) -> list[dict]:
