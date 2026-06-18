@@ -14,6 +14,7 @@ from telethon.tl.types import (
 )
 
 import storage
+import alert_map
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +99,12 @@ async def setup(client: TelegramClient, on_alert: Optional[AlertCallback] = None
 
         # Alert reposting
         if storage.is_alert(channel_id, username) and _on_alert:
+            if text.strip():
+                try:
+                    alert_map.save_alert(msg_id, key, text, date)
+                except Exception as e:
+                    logger.warning("Failed to save alert to DB: %s", e)
+
             try:
                 media_bytes = None
                 media_type = "text"
