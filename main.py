@@ -81,6 +81,7 @@ async def main():
             logger.error("Scheduled legal monitor failed: %s", exc)
 
     async with app:
+        app.bot_data["telethon_client"] = client
         await app.start()
         await app.updater.start_polling()
         logger.info(f"Bot started | provider={config.LLM_PROVIDER} | model={config.GROQ_MODEL if config.LLM_PROVIDER == 'groq' else config.ANTHROPIC_MODEL}")
