@@ -9,8 +9,8 @@ provider = get_provider()
 SUMMARIZER_INSTRUCTIONS = (
     "You are a concise news summarizer. "
     "Summarize the key points clearly and briefly. "
-    "Group by topic if relevant. Skip filler content."
-    "Make formatting for telegram"
+    "Group by topic if relevant. Skip filler content. "
+    "Make formatting for telegram."
 )
 
 
