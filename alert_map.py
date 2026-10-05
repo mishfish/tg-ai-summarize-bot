@@ -68,6 +68,146 @@ def save_alert(
     return after > before
 
 
+def save_alias(
+    alias: str,
+    district: str,
+    city: str,
+    lat: float,
+    lon: float,
+    db_path: str | None = None,
+) -> bool:
+    """Insert a location alias. Returns True if inserted, False if already exists."""
+    path = _db_path(db_path)
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with duckdb.connect(path) as conn:
+        _ensure_schema(conn)
+        before = conn.execute("SELECT COUNT(*) FROM location_aliases").fetchone()[0]
+        conn.execute(
+            "INSERT INTO location_aliases (alias, district, city, lat, lon)"
+            " VALUES (?, ?, ?, ?, ?) ON CONFLICT (alias) DO NOTHING",
+            [alias, district, city, lat, lon],
+        )
+        after = conn.execute("SELECT COUNT(*) FROM location_aliases").fetchone()[0]
+    return after > before
+
+
+def get_location_aliases(db_path: str | None = None) -> dict[str, dict]:
+    """Return all aliases as {alias: {district, city, lat, lon}}."""
+    path = _db_path(db_path)
+    if not os.path.exists(path):
+        return {}
+    with duckdb.connect(path) as conn:
+        _ensure_schema(conn)
+        rows = conn.execute(
+            "SELECT alias, district, city, lat, lon FROM location_aliases"
+        ).fetchall()
+    return {
+        r[0]: {"district": r[1], "city": r[2], "lat": r[3], "lon": r[4]}
+        for r in rows
+    }
+
+
+_CITY_BBOX = {
+    "odesa":    (45.5, 46.75, 29.0, 31.5),   # lat_min, lat_max, lon_min, lon_max
+    "mykolaiv": (46.5, 47.5,  31.5, 33.5),
+}
+
+
+def get_heatmap_points(
+    days: int = 7,
+    half_life_hours: float = 24.0,
+    city_filter: str | None = None,
+    db_path: str | None = None,
+) -> list[tuple[float, float, float]]:
+    """
+    Return [(lat, lon, weight)] for alerts that mention known location aliases.
+    Weight decays exponentially: exp(-age_hours / half_life_hours).
+    city_filter: "odesa" or "mykolaiv" — filters aliases by bounding box.
+    """
+    import math
+
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    aliases = get_location_aliases(db_path)
+    if not aliases:
+        return []
+
+    if city_filter and city_filter in _CITY_BBOX:
+        lat_min, lat_max, lon_min, lon_max = _CITY_BBOX[city_filter]
+        aliases = {
+            k: v for k, v in aliases.items()
+            if lat_min <= v["lat"] <= lat_max and lon_min <= v["lon"] <= lon_max
+        }
+
+    alerts = get_alerts(since=since, db_path=db_path)
+    now = datetime.now(timezone.utc)
+
+    points: list[tuple[float, float, float]] = []
+    for alert in alerts:
+        text_lower = alert["text"].lower()
+        age_hours = (now - _ensure_utc(alert["date"])).total_seconds() / 3600
+        weight = math.exp(-age_hours / half_life_hours)
+        for alias, geo in aliases.items():
+            if alias.lower() in text_lower:
+                points.append((geo["lat"], geo["lon"], weight))
+    return points
+
+
+def get_alias_mentions(
+    days: int = 7,
+    city_filter: str | None = None,
+    half_life_hours: float = 2.0,
+    db_path: str | None = None,
+) -> list[dict]:
+    """
+    Return [{alias, lat, lon, count, city, district, max_weight}] sorted by count desc.
+    max_weight is the decay weight of the most recent mention (same scale as heatmap).
+    """
+    import math
+
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    aliases = get_location_aliases(db_path)
+    if not aliases:
+        return []
+
+    if city_filter and city_filter in _CITY_BBOX:
+        lat_min, lat_max, lon_min, lon_max = _CITY_BBOX[city_filter]
+        aliases = {
+            k: v for k, v in aliases.items()
+            if lat_min <= v["lat"] <= lat_max and lon_min <= v["lon"] <= lon_max
+        }
+
+    alerts = get_alerts(since=since, db_path=db_path)
+    now = datetime.now(timezone.utc)
+    counts: dict[str, int] = {}
+    max_weights: dict[str, float] = {}
+
+    for alert in alerts:
+        text_lower = alert["text"].lower()
+        age_hours = (now - _ensure_utc(alert["date"])).total_seconds() / 3600
+        weight = math.exp(-age_hours / half_life_hours)
+        for alias in aliases:
+            if alias.lower() in text_lower:
+                counts[alias] = counts.get(alias, 0) + 1
+                if weight > max_weights.get(alias, 0):
+                    max_weights[alias] = weight
+
+    return sorted(
+        [
+            {
+                "alias": alias,
+                "lat": aliases[alias]["lat"],
+                "lon": aliases[alias]["lon"],
+                "city": aliases[alias]["city"],
+                "district": aliases[alias]["district"],
+                "count": cnt,
+                "max_weight": max_weights.get(alias, 0.0),
+            }
+            for alias, cnt in counts.items()
+        ],
+        key=lambda x: -x["count"],
+    )
+
+
 def get_alerts(
     since: datetime | None = None,
     db_path: str | None = None,

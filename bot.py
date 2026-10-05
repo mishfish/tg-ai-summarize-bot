@@ -2,7 +2,7 @@ import logging
 from datetime import time
 from functools import wraps
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -18,6 +18,7 @@ import summarizer
 from llm import get_provider
 import legal_monitor
 import alert_map
+import map_render
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +67,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "/clear — clear chat history\n"
             "/info — current settings\n"
             "/bills [pages] — scrape Verkhovna Rada bills\n"
-            "/fetchalerts [days] — завантажити історію алертів (default: 60 днів)"
+            "/fetchalerts [days] — завантажити історію алертів (default: 60 днів)\n"
+            "/map [days] [odesa|mykolaiv] — теплова карта алертів\n"
+            "/addalias назва | район | місто | lat | lon — додати локацію\n"
+            "/startlive [хв] [odesa|mykolaiv] — live-карта (default: 10 хв)\n"
+            "/stoplive — зупинити оновлення"
         )
     else:
         await update.message.reply_text("Send the access code to get started.")
@@ -300,6 +305,174 @@ async def fetchalerts_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(f"Помилка: {e}")
 
 
+_CITY_ALIASES = {"odesa": "odesa", "одеса": "odesa", "mykolaiv": "mykolaiv", "миколаїв": "mykolaiv"}
+
+_ADDALIAS_USAGE = (
+    "Usage: /addalias назва | район | місто | lat | lon\n"
+    "Приклад: /addalias Котовського | Суворовський | Одеса | 46.4069 | 30.6667"
+)
+
+
+@require_auth
+async def addalias_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    raw = " ".join(context.args or [])
+    parts = [p.strip() for p in raw.split("|")]
+    if len(parts) != 5:
+        await update.message.reply_text(_ADDALIAS_USAGE)
+        return
+    alias, district, city, lat_s, lon_s = parts
+    if not alias:
+        await update.message.reply_text(_ADDALIAS_USAGE)
+        return
+    try:
+        lat, lon = float(lat_s), float(lon_s)
+    except ValueError:
+        await update.message.reply_text("lat і lon мають бути числами.\n" + _ADDALIAS_USAGE)
+        return
+    is_new = alert_map.save_alias(alias, district, city, lat, lon)
+    if is_new:
+        await update.message.reply_text(f"Збережено: {alias} ({district}, {city}) → {lat}, {lon}")
+    else:
+        await update.message.reply_text(f"Вже існує: {alias}. Щоб оновити — видали спочатку через термінал.")
+
+
+@require_auth
+async def map_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    days = 7
+    city = None
+    for arg in (context.args or []):
+        if arg.lower() in _CITY_ALIASES:
+            city = _CITY_ALIASES[arg.lower()]
+        else:
+            try:
+                days = int(arg)
+            except ValueError:
+                await update.message.reply_text(
+                    "Usage: /map [days] [odesa|mykolaiv]\nПриклади: /map 14  /map 7 odesa  /map mykolaiv"
+                )
+                return
+
+    await update.message.chat.send_action("upload_photo")
+    try:
+        points = alert_map.get_heatmap_points(days=days, city_filter=city, half_life_hours=24)
+        mentions = alert_map.get_alias_mentions(days=days, city_filter=city, half_life_hours=24)
+        if not points:
+            aliases = alert_map.get_location_aliases()
+            if not aliases:
+                await update.message.reply_text(
+                    "location_aliases порожня. Спочатку запусти:\n"
+                    "<code>python extract_places.py</code>",
+                    parse_mode="HTML",
+                )
+            else:
+                await update.message.reply_text(
+                    f"За останні {days} дн. не знайдено повідомлень з відомими локаціями."
+                )
+            return
+
+        png = await map_render.render_heatmap(points, days=days, city=city, mentions=mentions)
+        await update.message.reply_photo(photo=png)
+    except Exception as e:
+        logger.error("map_command failed: %s", e)
+        await update.message.reply_text(f"Помилка генерації карти: {e}")
+
+
+async def _live_map_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Recurring job: regenerate map and edit the pinned message."""
+    data = context.job.data
+    chat_id = data["chat_id"]
+    message_id = data["message_id"]
+    city = data.get("city")
+    days = data.get("days", 1)
+
+    try:
+        half_life = data.get("half_life", 2.0)
+        points = alert_map.get_heatmap_points(days=days, city_filter=city, half_life_hours=half_life)
+        mentions = alert_map.get_alias_mentions(days=days, city_filter=city, half_life_hours=half_life)
+        png = await map_render.render_heatmap(points, days=days, city=city, mentions=mentions)
+        await context.bot.edit_message_media(
+            chat_id=chat_id,
+            message_id=message_id,
+            media=InputMediaPhoto(media=png),
+        )
+    except Exception as e:
+        logger.error("live_map_job failed: %s", e)
+
+
+async def startlive_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    msg_obj = update.effective_message
+    if not chat or chat.type == "private":
+        if not update.effective_user or not storage.is_authorized(update.effective_user.id):
+            await msg_obj.reply_text("Send the access code first.")
+            return
+    interval = 10
+    city = None
+    days = 1
+    half_life = 2.0
+    min_interval = 1
+    for arg in (context.args or []):
+        a = arg.lower()
+        if a in _CITY_ALIASES:
+            city = _CITY_ALIASES[a]
+        elif a.endswith("h") and a[:-1].replace(".", "").isdigit():
+            half_life = float(a[:-1])
+        elif a.endswith("m") and a[:-1].replace(".", "").isdigit():
+            half_life = float(a[:-1]) / 60
+        else:
+            try:
+                interval = max(min_interval, int(arg))
+            except ValueError:
+                pass
+
+    chat_id = chat.id
+    for job in context.job_queue.get_jobs_by_name(f"live_{chat_id}"):
+        job.schedule_removal()
+
+    await context.bot.send_chat_action(chat_id=chat_id, action="upload_photo")
+    points = alert_map.get_heatmap_points(days=days, city_filter=city, half_life_hours=half_life)
+    mentions = alert_map.get_alias_mentions(days=days, city_filter=city, half_life_hours=half_life)
+    png = await map_render.render_heatmap(points, days=days, city=city, mentions=mentions)
+    decay_str = f"{half_life:.4g}h" if half_life >= 1 else f"{half_life*60:.4g}m"
+    sent = await context.bot.send_photo(
+        chat_id=chat_id,
+        photo=png,
+        caption=f"Live-карта · оновлення кожні {interval} хв. · decay {decay_str}",
+    )
+
+    try:
+        await context.bot.pin_chat_message(chat_id=chat_id, message_id=sent.message_id, disable_notification=True)
+        pinned = True
+    except Exception:
+        pinned = False
+
+    context.job_queue.run_repeating(
+        _live_map_job,
+        interval=interval * 60,
+        first=interval * 60,
+        name=f"live_{chat_id}",
+        data={"chat_id": chat_id, "message_id": sent.message_id, "city": city, "days": days, "half_life": half_life},
+    )
+    note = "" if pinned else " (дай боту права адміна щоб закріплювати автоматично)"
+    await context.bot.send_message(chat_id=chat_id, text=f"Запущено. Оновлення кожні {interval} хв., decay {decay_str}.{note}")
+
+
+async def stoplive_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    if not chat or chat.type == "private":
+        if not update.effective_user or not storage.is_authorized(update.effective_user.id):
+            await update.effective_message.reply_text("Send the access code first.")
+            return
+    chat_id = chat.id
+    jobs = context.job_queue.get_jobs_by_name(f"live_{chat_id}")
+    if jobs:
+        for job in jobs:
+            job.schedule_removal()
+        await context.bot.send_message(chat_id=chat_id, text="Live-карту зупинено.")
+    else:
+        await context.bot.send_message(chat_id=chat_id, text="Live-карта не запущена.")
+
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     text = update.message.text.strip()
@@ -365,6 +538,10 @@ def create_app() -> Application:
     app.add_handler(CommandHandler("info", info))
     app.add_handler(CommandHandler("bills", bills_command))
     app.add_handler(CommandHandler("fetchalerts", fetchalerts_command))
+    app.add_handler(CommandHandler("map", map_command))
+    app.add_handler(CommandHandler("addalias", addalias_command))
+    app.add_handler(CommandHandler("startlive", startlive_command))
+    app.add_handler(CommandHandler("stoplive", stoplive_command))
     app.add_handler(CallbackQueryHandler(model_callback, pattern=r"^model:"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_text))
 
