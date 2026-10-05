@@ -69,7 +69,8 @@ class AnthropicProvider(LLMProvider):
 
     def chat(self, messages: list[dict]) -> str:
         # Anthropic separates system prompt from messages
-        system = config.SYSTEM_PROMPT
+        system_msgs = [m for m in messages if m["role"] == "system"]
+        system = system_msgs[-1]["content"] if system_msgs else config.SYSTEM_PROMPT
         non_system = [m for m in messages if m["role"] != "system"]
         response = self._client.messages.create(
             model=self._model,
